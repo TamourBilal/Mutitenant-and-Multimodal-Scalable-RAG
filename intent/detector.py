@@ -136,29 +136,35 @@ def _is_legal_name(filename: str) -> bool:
 
 def _peek_pdf(file_bytes: bytes) -> Dict:
     """
-    Quick peek at PDF content: extract text from first 3 pages.
+    Quick peek at PDF content using PyMuPDF: extract text from first 3 pages.
     Returns {text_sample, table_page_count, total_pages, avg_text_density}.
     """
     try:
-        import pdfplumber
+        import fitz
 
-        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-            total = len(pdf.pages)
-            sample_pages = pdf.pages[:min(3, total)]
+        with fitz.open(stream=file_bytes, filetype="pdf") as doc:
+            total = len(doc)
+            sample_count = min(3, total)
             texts, table_count = [], 0
-            for page in sample_pages:
-                t = (page.extract_text() or "").strip()
+            for i in range(sample_count):
+                page = doc[i]
+                t = page.get_text("text").strip()
                 texts.append(t)
-                if page.extract_tables():
+                # Heuristic: page has table-like content if many lines have 3+ columns
+                lines_with_cols = sum(
+                    1 for line in t.splitlines()
+                    if len([p for p in line.split("  ") if p.strip()]) >= 3
+                )
+                if lines_with_cols >= 3:
                     table_count += 1
             sample_text = "\n".join(texts)
-            avg_density = len(sample_text) / max(1, len(sample_pages))
+            avg_density = len(sample_text) / max(1, sample_count)
             return {
                 "text_sample": sample_text[:2000],
                 "table_page_count": table_count,
                 "total_pages": total,
                 "avg_text_density": avg_density,
-                "sample_page_count": len(sample_pages),
+                "sample_page_count": sample_count,
             }
     except Exception as e:
         logger.debug("[INTENT] PDF peek failed: %s", e)

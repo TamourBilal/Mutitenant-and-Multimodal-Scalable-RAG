@@ -149,16 +149,20 @@ def chunk_image_caption(
     source: str = "image",
     chunk_index: int = 0,
 ) -> Chunk:
-    """Single chunk for an image: stores caption in text_small + image path for CLIP."""
+    """
+    Single chunk for an image.
+    Caption is embedded with text-embedding-3-small → text_small (1536-dim).
+    No local CLIP model needed.
+    """
     return Chunk(
         content=caption if caption else f"Image: {image_file_path}",
         doc_type="image",
         source=source,
-        embed_model="small",       # caption → text_small
+        embed_model="small",
         named_vector="text_small",
         chunk_type="image_caption",
         page_no=page_no,
-        file_path=image_file_path, # also used for CLIP embedding
+        file_path=image_file_path,
         chunk_index=chunk_index,
     )
 
@@ -183,7 +187,8 @@ def route_and_chunk(
     """
     chunks: List[Chunk] = []
 
-    if doc_type in ("pdf", "docx", "legal"):
+    if doc_type in ("pdf", "docx", "legal", "news", "medical", "financial", "research", "other") or source == "pdf":
+        logger.info("[ROUTER] PDF branch | doc_type=%s text_pages=%d tables=%d", doc_type, len(text_pages or []), len(tables or []))
         if text_pages:
             chunks.extend(
                 chunk_text_pages(

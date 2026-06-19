@@ -1,69 +1,51 @@
+"""
+Image embedding via caption text.
+
+Flow:
+  Image file → vision LLM caption (OpenRouter) → text-embedding-3-small → 1536-dim vector
+
+No local HuggingFace / CLIP model is needed.
+The caption is embedded with the same text-embedding-3-small used for all text chunks,
+so images live in the same vector space and are searchable with normal text queries.
+"""
 from __future__ import annotations
 
-import asyncio
 import logging
-from pathlib import Path
-from typing import List, Union
-
-from config import settings
+from typing import List
 
 logger = logging.getLogger(__name__)
 
-_clip_model = None
-
-
-def _get_clip_model():
-    global _clip_model
-    if _clip_model is None:
-        from sentence_transformers import SentenceTransformer
-        _clip_model = SentenceTransformer(settings.CLIP_MODEL)
-        logger.info("CLIP model loaded | model=%s dim=%d", settings.CLIP_MODEL, settings.CLIP_DIM)
-    return _clip_model
-
-
-def _sync_embed_images(image_paths: List[str]) -> List[List[float]]:
-    from PIL import Image
-
-    model = _get_clip_model()
-    images = []
-    valid_indices: List[int] = []
-
-    for i, path in enumerate(image_paths):
-        try:
-            img = Image.open(path).convert("RGB")
-            images.append(img)
-            valid_indices.append(i)
-        except Exception as e:
-            logger.warning("[CLIP] Failed to open image | path=%s error=%s", path, e)
-
-    if not images:
-        return [[0.0] * settings.CLIP_DIM] * len(image_paths)
-
-    embeddings_raw = model.encode(images, convert_to_numpy=True)
-
-    results = [[0.0] * settings.CLIP_DIM] * len(image_paths)
-    for idx, emb in zip(valid_indices, embeddings_raw):
-        results[idx] = emb.tolist()
-
-    return results
-
 
 async def embed_images(image_paths: List[str]) -> List[List[float]]:
-    """Encode images with CLIP (clip-ViT-B-32) → 512-dim vectors."""
+    """
+    Embed a list of image file paths by:
+      1. Generating a caption with the vision LLM (already done at ingest time).
+      2. Embedding the caption with text-embedding-3-small.
+
+    At ingest time the pipeline calls generate_caption() first and stores the
+    caption as chunk.content, then calls embed_texts([caption], model="small").
+    This function is kept for API compatibility but delegates to text embedding.
+    """
+    from embedding.text_embedder import embed_texts
+    from parsing.image_handler import generate_caption, prepare_image_for_caption
+    from pipeline.ingest_pipeline import _get_openrouter_client
+
     if not image_paths:
         return []
-    return await asyncio.to_thread(_sync_embed_images, image_paths)
 
+    client = await _get_openrouter_client()
+    captions: List[str] = []
+    for path in image_paths:
+        caption = await generate_caption(path, client)
+        captions.append(caption if caption else f"Image: {path}")
 
-def _sync_embed_text_clip(texts: List[str]) -> List[List[float]]:
-    """Embed query text with CLIP so it lands in the same 512-dim space as images."""
-    model = _get_clip_model()
-    embeddings = model.encode(texts, convert_to_numpy=True)
-    return [e.tolist() for e in embeddings]
+    return await embed_texts(captions, model="small")
 
 
 async def embed_text_clip(texts: List[str]) -> List[List[float]]:
-    """Text→image space embedding (for text-to-image search at query time)."""
-    if not texts:
-        return []
-    return await asyncio.to_thread(_sync_embed_text_clip, texts)
+    """
+    Previously used CLIP to embed query text into image space.
+    Now uses text-embedding-3-small — same space as image captions.
+    """
+    from embedding.text_embedder import embed_texts
+    return await embed_texts(texts, model="small")

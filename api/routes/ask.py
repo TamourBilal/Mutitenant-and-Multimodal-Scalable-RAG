@@ -1,12 +1,8 @@
 """
 POST /api/v1/ask
 
-Full RAG endpoint — hybrid search (with score threshold) → cross-encoder
-rerank → LLM answer generation with inline [n] citations.
-
-Returns a generated answer only when the retrieved context clears the
-relevance threshold; otherwise responds with a low-confidence fallback
-message rather than hallucinating.
+Full RAG: hybrid search → cross-encoder rerank → LLM answer with citations.
+score_threshold is calculated internally from rerank scores.
 """
 from __future__ import annotations
 
@@ -18,37 +14,28 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from agent.answer_gen import AnswerResult, Reference, generate_answer
 from agent.query_router import route_query
-from api.deps import get_current_user
-from config import settings
-from db.models import User
+from api.collection_enum import Collection, resolve
 from db.session import get_db
-from embedding.image_embedder import embed_text_clip
 from embedding.text_embedder import embed_query
 from weaviate_store.retriever import SearchResult, hybrid_search
 
 router = APIRouter()
 
 _LOW_CONFIDENCE_MSG = (
-    "I could not find any document chunks that met the relevance threshold "
-    "({threshold:.0%}) for your question. Try rephrasing, lowering the threshold, "
-    "or ingesting more relevant documents."
+    "I could not find relevant chunks for your question. "
+    "Try rephrasing or ingesting more relevant documents."
 )
 
 
-# ── Request / Response schemas ────────────────────────────────────────────────
-
 class AskRequest(BaseModel):
-    question: str
-    doc_type_filter: Optional[str] = Field(
-        None,
-        description="Restrict to a doc_type: legal | news | medical | financial | research | pdf | html | image",
+    question: str = Field(..., description="The question to answer")
+    user_id: str = Field(..., description="Your user ID")
+    collections: List[Collection] = Field(
+        ...,
+        description="Collections to search: documents | tables | images",
     )
-    k: Optional[int] = Field(None, ge=1, le=50, description="Max context chunks (overrides dynamic k)")
-    score_threshold: Optional[float] = Field(
-        None, ge=0.0, le=1.0,
-        description="Minimum hybrid score for a chunk to reach the LLM (default from config)",
-    )
-    alpha: Optional[float] = Field(None, ge=0.0, le=1.0, description="BM25/semantic blend")
+    k: Optional[int] = Field(None, ge=1, le=50, description="Max chunks — adaptive if omitted")
+    alpha: Optional[float] = Field(None, ge=0.0, le=1.0, description="BM25/semantic blend (0=BM25, 1=semantic)")
 
 
 class ReferenceOut(BaseModel):
@@ -60,6 +47,7 @@ class ReferenceOut(BaseModel):
     file_path: str
     date: str
     score: float
+    rerank_score: float
     chunk_type: str
     doc_id: str
     content_preview: str
@@ -68,15 +56,19 @@ class ReferenceOut(BaseModel):
 class AskResponse(BaseModel):
     answer: str
     references: List[ReferenceOut]
-    chunks_used: int              # chunks that passed threshold and reached the LLM
-    chunks_filtered: int          # chunks dropped below threshold
-    score_threshold: float
+    user_id: str
+    collections_searched: List[str]
+    chunks_used: int
+    chunks_filtered: int
     k_used: int
     alpha_used: float
     named_vector_used: str
     tokens_used: int
     router_reason: str
-    low_confidence: bool          # True when 0 chunks passed the threshold
+    low_confidence: bool
+    guardrail_passed: bool
+    guardrail_verdict: str
+    query_complexity: str
 
 
 def _ref_to_out(r: Reference) -> ReferenceOut:
@@ -89,88 +81,89 @@ def _ref_to_out(r: Reference) -> ReferenceOut:
         file_path=r.file_path,
         date=r.date,
         score=r.score,
+        rerank_score=getattr(r, "rerank_score", 0.0),
         chunk_type=r.chunk_type,
         doc_id=r.doc_id,
         content_preview=r.content_preview,
     )
 
 
-# ── Endpoint ──────────────────────────────────────────────────────────────────
-
 @router.post("", response_model=AskResponse)
 async def ask_question(
     body: AskRequest,
-    current_user: Annotated[User, Depends(get_current_user)],
     _db: Annotated[AsyncSession, Depends(get_db)],
 ) -> AskResponse:
     """
-    Full RAG pipeline: retrieve → threshold filter → rerank → LLM answer.
+    Full RAG pipeline: retrieve → rerank → LLM answer.
 
-    The LLM only receives chunks that cleared the **score_threshold**.
-    If no chunks pass, the endpoint returns a `low_confidence=true` response
-    with a fallback message instead of hallucinating an answer.
+    **Required:**
+    - `question` — what you want to ask
+    - `user_id` — your user ID
+    - `collections` — which to search: `["documents"]`, `["tables"]`, `["images"]`
 
-    Top-k and threshold are determined dynamically by the query router
-    (GPT-4o-mini) and can be overridden per-request.
+    `k` is adaptive (router decides) unless overridden.
+    Relevance threshold is calculated internally from rerank scores.
     """
     if not body.question.strip():
         raise HTTPException(400, "Question cannot be empty")
+    if not body.user_id.strip():
+        raise HTTPException(400, "user_id is required")
 
-    # ── Step 1: Route ─────────────────────────────────────────────────────────
-    plan = await route_query(
-        body.question,
-        doc_type_hint=body.doc_type_filter,
-        k_override=body.k,
-        threshold_override=body.score_threshold,
-    )
+    collection_names = resolve(body.collections)
+
+    # Step 1 — adaptive routing (k, alpha, named_vector)
+    plan = await route_query(body.question, k_override=body.k)
     if body.alpha is not None:
         plan.alpha = max(0.0, min(1.0, body.alpha))
+    plan.collections = collection_names
 
-    # ── Step 2: Embed query ───────────────────────────────────────────────────
-    if plan.embed_model == "clip":
-        vecs = await embed_text_clip([body.question])
-        query_vector = vecs[0] if vecs else []
-    elif plan.embed_model == "large":
-        query_vector = await embed_query(body.question, model="large")
-    else:
-        query_vector = await embed_query(body.question, model="small")
+    if plan.doc_type_filter != "legal":
+        plan.embed_model = "small"
+        plan.named_vector = "text_small"
+
+    # Step 2 — embed
+    model = "large" if plan.embed_model == "large" else "small"
+    query_vector = await embed_query(body.question, model=model)
 
     if not query_vector:
         raise HTTPException(500, "Failed to embed query")
 
-    # ── Step 3: Hybrid search + threshold gate ────────────────────────────────
+    # Step 3 — hybrid search + rerank (threshold derived internally from rerank scores)
     result: SearchResult = await hybrid_search(
         query_text=body.question,
         query_vector=query_vector,
-        user_id=current_user.id,
+        user_id=body.user_id,
         named_vector=plan.named_vector,
         alpha=plan.alpha,
         k=plan.k,
-        doc_type_filter=plan.doc_type_filter,
-        score_threshold=plan.score_threshold,
+        score_threshold=0.0,
         rerank=True,
         rerank_top_n=min(plan.k, 8),
-        collection_names=plan.collections,
+        rerank_threshold=0.5,   # only chunks scoring ≥0.5 after rerank reach the LLM
+        collection_names=collection_names,
     )
 
-    # ── Step 4: Low-confidence gate ───────────────────────────────────────────
     low_confidence = len(result.hits) == 0
     if low_confidence:
         return AskResponse(
-            answer=_LOW_CONFIDENCE_MSG.format(threshold=result.score_threshold),
+            answer=_LOW_CONFIDENCE_MSG,
             references=[],
+            user_id=body.user_id,
+            collections_searched=collection_names,
             chunks_used=0,
             chunks_filtered=result.filtered_count,
-            score_threshold=result.score_threshold,
             k_used=plan.k,
             alpha_used=plan.alpha,
             named_vector_used=plan.named_vector,
             tokens_used=0,
             router_reason=plan.reason,
             low_confidence=True,
+            guardrail_passed=True,
+            guardrail_verdict="SAFE",
+            query_complexity=plan.complexity,
         )
 
-    # ── Step 5: Generate answer ───────────────────────────────────────────────
+    # Step 4 — generate answer
     answer_result: AnswerResult = await generate_answer(
         body.question,
         result.hits,
@@ -182,13 +175,17 @@ async def ask_question(
     return AskResponse(
         answer=answer_result.answer,
         references=[_ref_to_out(r) for r in answer_result.references],
+        user_id=body.user_id,
+        collections_searched=collection_names,
         chunks_used=len(result.hits),
         chunks_filtered=result.filtered_count,
-        score_threshold=result.score_threshold,
         k_used=plan.k,
         alpha_used=plan.alpha,
         named_vector_used=plan.named_vector,
         tokens_used=answer_result.tokens_used,
         router_reason=plan.reason,
         low_confidence=False,
+        guardrail_passed=answer_result.guardrail_passed,
+        guardrail_verdict=answer_result.guardrail_verdict,
+        query_complexity=plan.complexity,
     )

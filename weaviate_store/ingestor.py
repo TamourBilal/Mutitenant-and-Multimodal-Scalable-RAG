@@ -50,8 +50,10 @@ def _build_named_vector(obj: WeaviateObject) -> Dict[str, List[float]]:
     return vec
 
 
-def _sync_upsert(objects: List[WeaviateObject], user_id: str) -> Dict[str, Any]:
-    """Group by collection then batch-insert — runs in a thread."""
+def _sync_upsert(objects: List[WeaviateObject], user_id: str, collection_name_override: Optional[str] = None) -> Dict[str, Any]:
+    """Group by collection then batch-insert — runs in a thread.
+    collection_name_override forces all objects into one specific collection (user-selected).
+    """
     from weaviate.classes.data import DataObject
 
     client = get_weaviate_client()
@@ -59,7 +61,7 @@ def _sync_upsert(objects: List[WeaviateObject], user_id: str) -> Dict[str, Any]:
     # Group objects by target collection
     groups: Dict[str, List[WeaviateObject]] = defaultdict(list)
     for obj in objects:
-        coll = _collection_for(obj.properties.get("chunk_type", "text"))
+        coll = collection_name_override or _collection_for(obj.properties.get("chunk_type", "text"))
         groups[coll].append(obj)
 
     total = 0
@@ -107,12 +109,12 @@ def _sync_upsert(objects: List[WeaviateObject], user_id: str) -> Dict[str, Any]:
     return {"upserted": total, "errors": len(errors), "error_details": errors[:10]}
 
 
-async def batch_upsert(objects: List[WeaviateObject], user_id: str) -> Dict[str, Any]:
+async def batch_upsert(objects: List[WeaviateObject], user_id: str, collection_name_override: Optional[str] = None) -> Dict[str, Any]:
     """Async wrapper: runs Weaviate batch upsert in a thread pool."""
     if not objects:
         return {"upserted": 0, "errors": 0, "error_details": []}
-    logger.info("[INGESTOR] Starting upsert | objects=%d user=%s", len(objects), user_id)
-    return await asyncio.to_thread(_sync_upsert, objects, user_id)
+    logger.info("[INGESTOR] Starting upsert | objects=%d user=%s collection_override=%s", len(objects), user_id, collection_name_override)
+    return await asyncio.to_thread(_sync_upsert, objects, user_id, collection_name_override)
 
 
 def _sync_delete_by_doc(doc_id: str, user_id: str) -> Dict[str, Any]:

@@ -16,44 +16,52 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
-NamedVector = Literal["text_small", "text_large", "image"]
+NamedVector = Literal["text_small", "text_large"]
 
 _ROUTER_SYSTEM = f"""You are a retrieval strategy planner for a RAG system with THREE Weaviate collections:
   - "{settings.WEAVIATE_COLLECTION_DOCUMENTS}" — text chunks from PDFs and HTML pages
   - "{settings.WEAVIATE_COLLECTION_TABLES}"    — table chunks extracted from PDFs
-  - "{settings.WEAVIATE_COLLECTION_IMAGES}"    — image caption chunks (CLIP + text)
+  - "{settings.WEAVIATE_COLLECTION_IMAGES}"    — image caption chunks
 
 Given a user query, output a JSON object (no markdown, pure JSON) with:
 
 {{
-  "named_vector":    "text_small" | "text_large" | "image",
+  "named_vector":    "text_small" | "text_large",
   "alpha":           <float 0.0–1.0>,
-  "k":               <int 3–30>,
+  "k":               <int>,
+  "complexity":      "simple" | "moderate" | "complex",
   "score_threshold": <float 0.0–1.0>,
   "doc_type_filter": <string or null>,
-  "embed_model":     "small" | "large" | "clip",
+  "embed_model":     "small" | "large",
   "collections":     [<list of collection names to search>],
   "reason":          <short string>
 }}
 
-Rules:
-- named_vector="text_large", embed_model="large"  → legal/contract/compliance queries;
-  collections=["{settings.WEAVIATE_COLLECTION_DOCUMENTS}", "{settings.WEAVIATE_COLLECTION_TABLES}"]
-- named_vector="image", embed_model="clip"        → visual/diagram/image queries;
-  collections=["{settings.WEAVIATE_COLLECTION_IMAGES}"]
-- named_vector="text_small", embed_model="small"  → all other queries;
-  default collections=["{settings.WEAVIATE_COLLECTION_DOCUMENTS}", "{settings.WEAVIATE_COLLECTION_TABLES}"]
-- For broad summarise/compare queries spanning all content: include all three collections.
-- For table-specific queries (numbers, statistics): add "{settings.WEAVIATE_COLLECTION_TABLES}".
+── K SIZING (based on query complexity) ──────────────────────────────────────
+complexity="simple"   → k = 5–10
+  Single fact, single metric, single entity lookup.
+  Examples: "What is Africa GDP?", "Population of Eastern Africa?"
 
-score_threshold:
-- Simple factual queries → 0.75 (high bar, precision over recall)
-- Complex/multi-part queries → 0.60 (lower bar, recall over precision)
-- Default → 0.70
+complexity="moderate" → k = 10–20
+  Multi-part, comparison between 2-3 entities, explanation needed.
+  Examples: "Compare GDP of Northern vs Southern Africa",
+            "What are the economic indicators for Sub-Saharan Africa?"
 
-alpha: 0.3 for keyword/exact-match; 0.75 for conceptual/semantic; 0.5 for mixed.
-k: 3 for simple facts, 10–15 for explanations, 20–30 for summarise/compare.
-doc_type_filter: "legal" | "news" | "medical" | "financial" | "research" | "pdf" | "html" | "image" | null.
+complexity="complex"  → k = 20–40
+  Broad summary, cross-document analysis, trend analysis, tables needed.
+  Examples: "Summarize all regional GDP statistics with a table",
+            "Compare population and GDP across all African regions",
+            "What are the key trends across all indicators?"
+
+── OTHER RULES ────────────────────────────────────────────────────────────────
+- named_vector="text_large", embed_model="large" → ONLY for legal/contract/compliance documents
+- named_vector="text_small", embed_model="small" → ALL other queries (stats, finance, research, news, images, general)
+- image/visual queries → collections=["{settings.WEAVIATE_COLLECTION_IMAGES}"]
+- table/statistics queries → include "{settings.WEAVIATE_COLLECTION_TABLES}"
+- broad/compare queries → include all three collections
+- alpha: 0.3=keyword, 0.75=semantic, 0.5=mixed (use 0.5 for stats/numbers)
+- score_threshold: simple=0.75, moderate=0.65, complex=0.55
+
 Output ONLY the JSON object."""
 
 
@@ -62,9 +70,10 @@ class QueryPlan:
     named_vector: NamedVector = "text_small"
     alpha: float = 0.75
     k: int = 10
+    complexity: str = "moderate"       # simple | moderate | complex
     score_threshold: float = settings.SCORE_THRESHOLD
     doc_type_filter: Optional[str] = None
-    embed_model: Literal["small", "large", "clip"] = "small"
+    embed_model: Literal["small", "large"] = "small"
     reason: str = ""
     collections: List[str] = field(
         default_factory=lambda: [
@@ -129,10 +138,22 @@ async def route_query(
         threshold = float(data.get("score_threshold", settings.SCORE_THRESHOLD))
         threshold = max(0.0, min(1.0, threshold))
 
+        complexity = data.get("complexity", "moderate")
+
+        # Enforce k bounds per complexity tier
+        raw_k = int(data.get("k", 10))
+        if complexity == "simple":
+            k = max(5, min(raw_k, 10))
+        elif complexity == "complex":
+            k = max(20, min(raw_k, 40))
+        else:  # moderate
+            k = max(10, min(raw_k, 20))
+
         plan = QueryPlan(
             named_vector=data.get("named_vector", "text_small"),
             alpha=float(data.get("alpha", 0.75)),
-            k=int(data.get("k", 10)),
+            k=k,
+            complexity=complexity,
             score_threshold=threshold,
             doc_type_filter=data.get("doc_type_filter") or doc_type_hint,
             embed_model=data.get("embed_model", "small"),
@@ -146,10 +167,10 @@ async def route_query(
             plan.score_threshold = max(0.0, min(1.0, threshold_override))
 
         logger.info(
-            "[ROUTER] Plan | nv=%s alpha=%.2f k=%d threshold=%.2f "
-            "collections=%s filter=%s reason=%s",
-            plan.named_vector, plan.alpha, plan.k, plan.score_threshold,
-            plan.collections, plan.doc_type_filter, plan.reason,
+            "[ROUTER] Plan | complexity=%s k=%d nv=%s alpha=%.2f threshold=%.2f "
+            "collections=%s reason=%s",
+            plan.complexity, plan.k, plan.named_vector, plan.alpha,
+            plan.score_threshold, plan.collections, plan.reason,
         )
         return plan
 

@@ -129,41 +129,34 @@ async def _process_pdf(
     filename: str,
     openrouter_client,
 ) -> tuple[List[Chunk], Optional[datetime]]:
+    logger.info("[PIPELINE] Step: parsing PDF | file=%s", filename)
     parsed = await parse_pdf(orig_path, images_dir)
-    chunks: List[Chunk] = []
-
-    chunks.extend(
-        route_and_chunk(
-            doc_type=intent.doc_type,
-            source=intent.source,
-            filename=filename,
-            original_file_path=str(orig_path),
-            text_pages=parsed.text_pages,
-            tables=parsed.tables,
-        )
+    logger.info(
+        "[PIPELINE] Step: PDF parsed | pages=%d text_pages=%d tables=%d images=%d",
+        parsed.page_count, len(parsed.text_pages), len(parsed.tables), len(parsed.images),
     )
 
-    for img in parsed.images:
+    logger.info("[PIPELINE] Step: chunking text pages (semantic, blocking in thread) ...")
+    chunks: List[Chunk] = await asyncio.to_thread(
+        route_and_chunk,
+        doc_type=intent.doc_type,
+        source=intent.source,
+        filename=filename,
+        original_file_path=str(orig_path),
+        text_pages=parsed.text_pages,
+        tables=parsed.tables,
+    )
+    logger.info("[PIPELINE] Step: chunking done | chunks=%d", len(chunks))
+
+    for i, img in enumerate(parsed.images):
         img_path = img["file_path"]
         page_no  = img["page_no"]
-        idx      = len(chunks)
+        logger.info("[PIPELINE] Step: captioning image %d/%d | page=%d", i + 1, len(parsed.images), page_no)
         caption  = await generate_caption(img_path, openrouter_client)
         chunks.append(chunk_image_caption(
-            caption, img_path, page_no=page_no, source=intent.source, chunk_index=idx,
-        ))
-        chunks.append(Chunk(
-            content=caption or f"Image page {page_no}",
-            doc_type=intent.doc_type,
-            source=intent.source,
-            embed_model="clip",
-            named_vector="image",
-            chunk_type="image_caption",
-            page_no=page_no,
-            file_path=img_path,
-            chunk_index=idx + 1,
+            caption, img_path, page_no=page_no, source=intent.source, chunk_index=len(chunks),
         ))
 
-    # Extract date from the first pages text already peeked by the parser
     full_text = " ".join(p.get("content", "") for p in parsed.text_pages[:3])
     doc_date = extract_date_from_pdf_text(full_text)
 
@@ -180,8 +173,13 @@ async def _process_html(
     orig_path: Path,
     filename: str,
 ) -> tuple[List[Chunk], Optional[datetime]]:
+    logger.info("[PIPELINE] Step: parsing HTML | file=%s", filename)
     raw_text = parse_html(file_bytes)
-    chunks = route_and_chunk(
+    logger.info("[PIPELINE] Step: HTML parsed | chars=%d", len(raw_text))
+
+    logger.info("[PIPELINE] Step: chunking HTML (blocking in thread) ...")
+    chunks = await asyncio.to_thread(
+        route_and_chunk,
         doc_type="html",
         source="html",
         filename=filename,
@@ -202,18 +200,12 @@ async def _process_image(
 ) -> tuple[List[Chunk], Optional[datetime]]:
     img_path = save_image_locally(file_bytes, images_dir)
     caption  = await generate_caption(img_path, openrouter_client)
+    # Single chunk: caption embedded with text-embedding-3-small (no CLIP)
     chunks = [
         chunk_image_caption(caption, img_path, page_no=0, source="image", chunk_index=0),
-        Chunk(
-            content=caption or f"Image: {filename}",
-            doc_type="image", source="image",
-            embed_model="clip", named_vector="image",
-            chunk_type="image_caption", page_no=0,
-            file_path=img_path, chunk_index=1,
-        ),
     ]
     logger.info("[PIPELINE] Image processed | caption_len=%d", len(caption))
-    return chunks, None   # images don't have an embedded date
+    return chunks, None
 
 
 async def _process_other(
@@ -285,6 +277,7 @@ async def run_ingestion_pipeline(
     user_id: str,
     doc_id: str,
     doc_type_hint: Optional[str] = None,
+    collection_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Intent-driven ingestion pipeline.
@@ -349,21 +342,28 @@ async def run_ingestion_pipeline(
             doc_date_source = "extracted"
 
         effective_date = doc_date or ingestion_date
-        doc_date_iso   = effective_date.isoformat()
+        # Weaviate requires RFC3339 with timezone — ensure UTC suffix
+        if effective_date.tzinfo is None:
+            effective_date = effective_date.replace(tzinfo=timezone.utc)
+        doc_date_iso = effective_date.isoformat().replace("+00:00", "Z")
 
         if not all_chunks:
             logger.warning("[PIPELINE] No chunks produced | doc_id=%s", doc_id)
 
+        logger.info("[PIPELINE] Step: embedding %d chunks ...", len(all_chunks))
         # ── Step 5: Embed (batched, parallel models) ───────────────────────────
         weaviate_objects = await _embed_and_build_objects(all_chunks, doc_date_iso)
+        logger.info("[PIPELINE] Step: embedding done | objects=%d", len(weaviate_objects))
 
         for obj, chunk in zip(weaviate_objects, all_chunks):
             obj.properties["doc_id"]   = doc_id
             obj.properties["filename"] = filename
             obj.properties["user_id"]  = user_id
 
+        logger.info("[PIPELINE] Step: upserting to Weaviate | collection=%s ...", collection_name)
         # ── Step 6: Batch upsert to Weaviate ──────────────────────────────────
-        result = await batch_upsert(weaviate_objects, user_id)
+        result = await batch_upsert(weaviate_objects, user_id, collection_name_override=collection_name)
+        logger.info("[PIPELINE] Step: upsert done | upserted=%d errors=%d", result["upserted"], result["errors"])
 
         chunk_count = result["upserted"]
 

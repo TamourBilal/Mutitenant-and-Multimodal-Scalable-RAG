@@ -1,3 +1,10 @@
+"""
+Image captioning via OpenRouter vision LLM (no local models).
+
+Flow:
+  Image bytes → resize → base64 → OpenRouter VISION_MODEL → caption string
+  Caption → text-embedding-3-small (in text_embedder.py) → 1536-dim vector
+"""
 from __future__ import annotations
 
 import asyncio
@@ -6,11 +13,10 @@ import io
 import logging
 import uuid
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-MAX_DIMENSION = 1024   # resize longest side to this before sending to OpenRouter
+MAX_DIMENSION = 1024
 
 
 def _resize_image(image_bytes: bytes, max_dim: int = MAX_DIMENSION) -> bytes:
@@ -43,24 +49,31 @@ def prepare_image_for_caption(image_path: str) -> str:
     return f"data:image/png;base64,{b64}"
 
 
+_CAPTION_PROMPT = (
+    "You are an image description assistant. "
+    "Describe this image in detail covering: what is shown, any visible text, "
+    "data from charts or graphs, and overall context. "
+    "Be concise but complete (2-5 sentences). "
+    "Focus on information that would help answer questions about this image."
+)
+
+
 async def generate_caption(image_path: str, openrouter_client) -> str:
-    """Call OpenRouter vision model to caption an image."""
+    """
+    Caption an image using the configured OpenRouter vision model (VISION_MODEL).
+    Returns the caption string, or empty string on failure.
+    """
+    from config import settings
+
     try:
         data_uri = await asyncio.to_thread(prepare_image_for_caption, image_path)
         response = await openrouter_client.chat.completions.create(
-            model="openai/gpt-4o-mini",
+            model=settings.VISION_MODEL,
             messages=[
                 {
                     "role": "user",
                     "content": [
-                        {
-                            "type": "text",
-                            "text": (
-                                "Describe this image in detail. Include: what is shown, "
-                                "any text visible, charts/graphs data if present, and context. "
-                                "Be concise but complete (2-4 sentences)."
-                            ),
-                        },
+                        {"type": "text", "text": _CAPTION_PROMPT},
                         {
                             "type": "image_url",
                             "image_url": {"url": data_uri, "detail": "low"},
@@ -68,9 +81,13 @@ async def generate_caption(image_path: str, openrouter_client) -> str:
                     ],
                 }
             ],
-            max_tokens=300,
+            max_tokens=400,
         )
         caption = response.choices[0].message.content or ""
+        logger.info(
+            "[IMAGE_HANDLER] Caption generated | model=%s path=%s len=%d",
+            settings.VISION_MODEL, image_path, len(caption),
+        )
         return caption.strip()
     except Exception as e:
         logger.error("[IMAGE_HANDLER] Caption failed | path=%s err=%s", image_path, e)

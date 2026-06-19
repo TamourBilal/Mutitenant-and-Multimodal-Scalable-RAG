@@ -17,7 +17,7 @@ from db.session import get_db
 from weaviate_store.client import ensure_tenant
 
 router = APIRouter()
-pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=12, truncate_error=False)
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────

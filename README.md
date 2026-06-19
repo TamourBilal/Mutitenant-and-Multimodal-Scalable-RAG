@@ -1,0 +1,541 @@
+# Multitenant Multimodal Scalable RAG
+
+A production-ready Retrieval-Augmented Generation (RAG) system with multi-tenancy, multimodal support (PDF, HTML, images), agentic query routing, and guardrails.
+
+---
+
+## Architecture Overview
+
+```
+User Request
+    │
+    ▼
+FastAPI (main.py)
+    │
+    ├── Guardrail Check (gpt-4o-mini) ── blocks harmful queries
+    │
+    ├── Query Router (gpt-4o-mini)
+    │       └── decides: k (5-40), alpha, named_vector, collections
+    │
+    ├── Embedding (text-embedding-3-small / text-embedding-3-large)
+    │       └── via OpenRouter API
+    │
+    ├── Weaviate Hybrid Search (BM25 + Semantic)
+    │       └── per-user tenant isolation
+    │
+    ├── LLM Reranker (gpt-4o-mini)
+    │       └── scores 0.0–1.0, drops chunks below 0.5
+    │
+    └── Answer Generator (gpt-4o)
+            └── markdown tables + inline citations + file references
+```
+
+---
+
+## Key Concepts
+
+### Multi-Tenancy
+Each `user_id` maps to an isolated Weaviate tenant. User A cannot access User B's documents. Tenants are auto-created on first ingest.
+
+### Collections
+| Collection | Alias | Content |
+|-----------|-------|---------|
+| `RAGDocuments` | `documents` | Text chunks from PDFs and HTML pages |
+| `RAGTables` | `tables` | Table-heavy PDF chunks |
+| `RAGImages` | `images` | Image captions (vision LLM) |
+
+### Named Vectors (Embeddings)
+| Vector | Dimensions | Used For |
+|--------|-----------|----------|
+| `text_small` | 1536-dim | All documents (PDF, HTML, images) |
+| `text_large` | 3072-dim | Legal/contract documents only |
+
+### Adaptive K (Query Complexity)
+The router (gpt-4o-mini) classifies every query:
+| Complexity | K Range | Example |
+|-----------|---------|---------|
+| `simple` | 5–10 | "What is Africa's GDP?" |
+| `moderate` | 10–20 | "Compare GDP of 3 regions" |
+| `complex` | 20–40 | "Summarize all regional statistics" |
+
+### Ingestion Pipeline
+```
+File Upload
+  → Intent Detection (heuristic + LLM fallback)
+  → Parse (PyMuPDF for PDF / BeautifulSoup for HTML / vision LLM for images)
+  → Semantic Chunking (cosine similarity on sentence embeddings)
+  → Embed (text-embedding-3-small via OpenRouter)
+  → Upsert to Weaviate (batch 500, per-user tenant)
+  → SQLite status update
+```
+
+### Retrieval Pipeline
+```
+Query
+  → Guardrail (SAFE/UNSAFE check)
+  → Route (k, alpha, named_vector, collections)
+  → Embed query (text-embedding-3-small)
+  → Hybrid Search (BM25 + semantic, alpha=0.5–0.75)
+  → Deduplication (by page + content fingerprint)
+  → LLM Rerank (gpt-4o-mini scores 0.0–1.0)
+  → Rerank threshold gate (≥0.5 passes)
+  → Answer Generation (gpt-4o, markdown tables + citations)
+```
+
+---
+
+## Installation
+
+### 1. Prerequisites
+- Python 3.11
+- Docker Desktop (for Weaviate)
+- OpenRouter account with credits
+
+---
+
+### 2. Install Weaviate (Docker)
+
+**Option A — Docker Compose (recommended)**
+
+Create `docker-compose.yml`:
+```yaml
+version: '3.4'
+services:
+  weaviate:
+    image: cr.weaviate.io/semitechnologies/weaviate:1.24.1
+    ports:
+      - "8080:8080"
+      - "50051:50051"
+    environment:
+      QUERY_DEFAULTS_LIMIT: 25
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: 'true'
+      PERSISTENCE_DATA_PATH: '/var/lib/weaviate'
+      DEFAULT_VECTORIZER_MODULE: 'none'
+      ENABLE_MODULES: ''
+      CLUSTER_HOSTNAME: 'node1'
+    volumes:
+      - weaviate_data:/var/lib/weaviate
+volumes:
+  weaviate_data:
+```
+
+Start Weaviate:
+```bash
+docker-compose up -d
+```
+
+Verify it's running:
+```bash
+curl http://localhost:8080/v1/meta
+```
+
+**Option B — Docker run (quick)**
+```bash
+docker run -d \
+  -p 8080:8080 \
+  -p 50051:50051 \
+  --name weaviate \
+  cr.weaviate.io/semitechnologies/weaviate:1.24.1 \
+  --default-vectorizer-module none \
+  --authentication-anonymous-access-enabled true
+```
+
+---
+
+### 3. Create Python Virtual Environment
+
+```bash
+python -m venv C:\envs\rag-env1
+```
+
+---
+
+### 4. Install Dependencies
+
+```bash
+cd C:\github\Mutitenant-and-Multimodal-Scalable-RAG
+C:\envs\rag-env1\Scripts\pip install --no-cache-dir -r requirements.txt
+```
+
+---
+
+### 5. Configure Environment
+
+Create `.env` in the project root:
+```env
+# Required
+OPENROUTER_API_KEY=sk-or-your-key-here
+SECRET_KEY=replace_with_openssl_rand_hex_32_output
+
+# Database
+DB_URL=sqlite+aiosqlite:///./rag.db
+
+# Weaviate
+WEAVIATE_HOST=localhost
+WEAVIATE_PORT=8080
+WEAVIATE_GRPC_PORT=50051
+
+# Server
+HOST=0.0.0.0
+PORT=8000
+DEBUG=false
+
+# Models (OpenRouter)
+ROUTER_MODEL=openai/gpt-4o-mini
+ANSWER_MODEL=openai/gpt-4o
+RERANK_MODEL=openai/gpt-4o-mini
+VISION_MODEL=openai/gpt-4o-mini
+
+# Embeddings
+EMBED_MODEL_SMALL=text-embedding-3-small
+EMBED_MODEL_LARGE=text-embedding-3-large
+
+# Storage
+STORAGE_DIR=./storage
+METADATA_DIR=./storage/metadata
+```
+
+Generate `SECRET_KEY`:
+```bash
+python -c "import secrets; print(secrets.token_hex(32))"
+```
+
+---
+
+### 6. Run the Server
+
+```bash
+cd C:\github\Mutitenant-and-Multimodal-Scalable-RAG
+C:\envs\rag-env1\Scripts\uvicorn main:app --host 0.0.0.0 --port 8000 --reload --timeout-graceful-shutdown 3
+```
+
+Or via VS Code: press `F5` (uses `.vscode/launch.json`).
+
+Open **http://localhost:8000/docs** for Swagger UI.
+
+---
+
+## API Endpoints
+
+### Ingestion
+
+#### Upload a PDF
+```bash
+curl -X POST http://localhost:8000/api/v1/ingest \
+  -F "file=@/path/to/document.pdf" \
+  -F "user_id=alice" \
+  -F "collection=documents"
+```
+
+#### Upload HTML
+```bash
+curl -X POST http://localhost:8000/api/v1/ingest \
+  -F "file=@/path/to/page.html" \
+  -F "user_id=alice" \
+  -F "collection=html"
+```
+
+#### Upload Image
+```bash
+curl -X POST http://localhost:8000/api/v1/ingest \
+  -F "file=@/path/to/image.png" \
+  -F "user_id=alice" \
+  -F "collection=images"
+```
+
+#### Upload Table-Heavy PDF
+```bash
+curl -X POST http://localhost:8000/api/v1/ingest \
+  -F "file=@/path/to/report.pdf" \
+  -F "user_id=alice" \
+  -F "collection=tables" \
+  -F "doc_type=financial"
+```
+
+**Collection values:** `documents` | `tables` | `images` | `html`
+**doc_type (optional):** `pdf` | `legal` | `html` | `image` | `news` | `medical` | `financial` | `research`
+
+---
+
+### Document Management
+
+#### List Documents
+```bash
+curl -X GET "http://localhost:8000/api/v1/documents?user_id=alice"
+```
+
+#### List with Filters
+```bash
+curl -X GET "http://localhost:8000/api/v1/documents?user_id=alice&status_filter=done&doc_type_filter=pdf"
+```
+
+#### Get Document Status (poll after ingest)
+```bash
+curl -X GET "http://localhost:8000/api/v1/documents/DOC_ID?user_id=alice"
+```
+
+#### Delete Document
+```bash
+curl -X DELETE "http://localhost:8000/api/v1/documents/DOC_ID?user_id=alice"
+```
+
+---
+
+### Search (Raw Chunks — No LLM Answer)
+
+#### Search Documents
+```bash
+curl -X POST http://localhost:8000/api/v1/search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "GDP statistics by region",
+    "user_id": "alice",
+    "collections": ["documents"],
+    "alpha": 0.5
+  }'
+```
+
+#### Search Tables
+```bash
+curl -X POST http://localhost:8000/api/v1/search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "population density per km2",
+    "user_id": "alice",
+    "collections": ["tables"],
+    "k": 5
+  }'
+```
+
+#### Search Images
+```bash
+curl -X POST http://localhost:8000/api/v1/search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "bar chart showing economic growth",
+    "user_id": "alice",
+    "collections": ["images"]
+  }'
+```
+
+#### Search Multiple Collections
+```bash
+curl -X POST http://localhost:8000/api/v1/search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "energy consumption statistics",
+    "user_id": "alice",
+    "collections": ["documents", "tables"],
+    "k": 10,
+    "alpha": 0.75
+  }'
+```
+
+**Search parameters:**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `query` | string | Search text |
+| `user_id` | string | Your user ID |
+| `collections` | list | `["documents"]`, `["tables"]`, `["images"]`, `["html"]` or any combination |
+| `k` | int (optional) | Max chunks — router decides if omitted |
+| `alpha` | float (optional) | 0.0=BM25 only, 1.0=semantic only, 0.5=balanced |
+
+---
+
+### Ask (Agentic RAG — Full Answer with Citations)
+
+#### Simple Question
+```bash
+curl -X POST http://localhost:8000/api/v1/ask \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "What is the GDP of Africa in 2023?",
+    "user_id": "alice",
+    "collections": ["documents"]
+  }'
+```
+
+#### Compare Across Regions (Table Output)
+```bash
+curl -X POST http://localhost:8000/api/v1/ask \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "Compare GDP across African regions with a table",
+    "user_id": "alice",
+    "collections": ["documents"],
+    "alpha": 0.5
+  }'
+```
+
+#### Multi-Collection Ask
+```bash
+curl -X POST http://localhost:8000/api/v1/ask \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "Summarize all economic indicators including tables and charts",
+    "user_id": "alice",
+    "collections": ["documents", "tables", "images"]
+  }'
+```
+
+**Ask parameters:**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `question` | string | Your question |
+| `user_id` | string | Your user ID |
+| `collections` | list | Collections to search |
+| `k` | int (optional) | Max chunks — adaptive if omitted |
+| `alpha` | float (optional) | BM25/semantic blend |
+
+**Ask response includes:**
+- `answer` — markdown formatted with tables, inline citations `[1]`, file references
+- `references` — list of source chunks with filename, page, path, score
+- `guardrail_passed` — whether query passed safety check
+- `query_complexity` — `simple` / `moderate` / `complex`
+- `chunks_used` — how many chunks reached the LLM
+- `chunks_filtered` — how many were dropped by rerank threshold
+
+---
+
+### Query (Alternative RAG Endpoint)
+
+```bash
+curl -X POST http://localhost:8000/api/v1/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "What are the population trends in Sub-Saharan Africa?",
+    "user_id": "alice",
+    "collections": ["documents"],
+    "k_override": 8,
+    "alpha_override": 0.6
+  }'
+```
+
+---
+
+### Utility
+
+#### Health Check
+```bash
+curl http://localhost:8000/health
+```
+
+#### List All Routes
+```bash
+curl http://localhost:8000/api/v1/routes
+```
+
+---
+
+## Project Structure
+
+```
+├── main.py                    # FastAPI app, lifespan, routes
+├── config.py                  # All settings (pydantic-settings + .env)
+├── requirements.txt
+├── .env                       # Secrets (not in git)
+│
+├── api/
+│   ├── collection_enum.py     # Collection enum: documents|tables|images|html
+│   └── routes/
+│       ├── ingest.py          # POST /api/v1/ingest
+│       ├── documents.py       # GET/DELETE /api/v1/documents
+│       ├── search.py          # POST /api/v1/search
+│       ├── ask.py             # POST /api/v1/ask
+│       └── query.py           # POST /api/v1/query
+│
+├── agent/
+│   ├── query_router.py        # Adaptive k + retrieval planning (gpt-4o-mini)
+│   └── answer_gen.py          # Guardrail + answer generation (gpt-4o)
+│
+├── pipeline/
+│   └── ingest_pipeline.py     # End-to-end ingestion orchestration
+│
+├── parsing/
+│   ├── pdf_parser.py          # PyMuPDF text + table + image extraction
+│   ├── html_parser.py         # BeautifulSoup HTML cleaner
+│   ├── image_handler.py       # Vision LLM captioning
+│   └── date_extractor.py      # Publication date extraction
+│
+├── chunking/
+│   ├── semantic_chunker.py    # Cosine similarity sentence splitter (batched)
+│   ├── recursive_html.py      # HTML recursive splitter
+│   └── router.py              # Routes content to correct chunker
+│
+├── embedding/
+│   ├── text_embedder.py       # text-embedding-3-small/large via OpenRouter
+│   └── image_embedder.py      # Caption → text-embedding-3-small
+│
+├── intent/
+│   └── detector.py            # 2-pass: heuristics + LLM classification
+│
+├── weaviate_store/
+│   ├── client.py              # Weaviate connection + tenant management
+│   ├── schema.py              # Collection schema (named vectors)
+│   ├── ingestor.py            # Batch upsert with collection override
+│   └── retriever.py           # Hybrid search + dedup + rerank + threshold
+│
+├── db/
+│   ├── models.py              # SQLAlchemy: User, Document
+│   └── session.py             # Async SQLite session
+│
+└── .vscode/
+    └── launch.json            # VS Code debug config (F5 to run)
+```
+
+---
+
+## Models Used (via OpenRouter)
+
+| Role | Model | Purpose |
+|------|-------|---------|
+| Routing | `gpt-4o-mini` | Query complexity + retrieval planning |
+| Reranking | `gpt-4o-mini` | Score chunk relevance 0.0–1.0 |
+| Guardrail | `gpt-4o-mini` | SAFE/UNSAFE classification |
+| Captioning | `gpt-4o-mini` | Image description (vision) |
+| Answering | `gpt-4o` | Final answer with citations |
+| Embedding | `text-embedding-3-small` | 1536-dim vectors (all docs) |
+| Embedding | `text-embedding-3-large` | 3072-dim vectors (legal only) |
+
+To use free models (no credits needed), set in `.env`:
+```env
+ROUTER_MODEL=meta-llama/llama-3.1-8b-instruct:free
+ANSWER_MODEL=meta-llama/llama-3.1-8b-instruct:free
+RERANK_MODEL=meta-llama/llama-3.1-8b-instruct:free
+VISION_MODEL=meta-llama/llama-3.2-11b-vision-instruct:free
+```
+
+---
+
+## Weaviate Schema
+
+Three collections with multi-tenancy enabled:
+
+```
+RAGDocuments
+  ├── text_small (1536-dim) — text-embedding-3-small
+  └── text_large (3072-dim) — text-embedding-3-large (legal only)
+
+RAGTables
+  ├── text_small (1536-dim)
+  └── text_large (3072-dim)
+
+RAGImages
+  └── text_small (1536-dim) — image caption embeddings
+```
+
+Each collection stores:
+`content` · `doc_type` · `doc_id` · `filename` · `page_no` · `chunk_type` · `file_path` · `date` · `user_id`
+
+---
+
+## Troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| Weaviate not reachable | Run `docker-compose up -d`, check port 8080 |
+| 0 chunks returned | Check `user_id` matches ingestion user |
+| Ingestion stuck | PDF may be scanned — check logs for `[PDF_PARSER]` |
+| `httpx` conflict | Use `httpx==0.27.0` (weaviate-client constraint) |
+| Slow startup | Normal on first run — models download ~30s |
+| Date format error | Ensure Weaviate receives ISO8601 with `Z` suffix |
