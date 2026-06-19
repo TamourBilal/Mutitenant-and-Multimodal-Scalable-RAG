@@ -39,19 +39,19 @@ Given a user query, output a JSON object (no markdown, pure JSON) with:
 
 ── K SIZING (based on query complexity) ──────────────────────────────────────
 complexity="simple"   → k = 5–10
-  Single fact, single metric, single entity lookup.
+  Single fact, single metric, single entity.
   Examples: "What is Africa GDP?", "Population of Eastern Africa?"
 
 complexity="moderate" → k = 10–20
-  Multi-part, comparison between 2-3 entities, explanation needed.
-  Examples: "Compare GDP of Northern vs Southern Africa",
-            "What are the economic indicators for Sub-Saharan Africa?"
+  Comparison of 2-3 entities, explanation, multi-part.
+  Examples: "Compare GDP of Northern vs Southern Africa"
 
-complexity="complex"  → k = 20–40
-  Broad summary, cross-document analysis, trend analysis, tables needed.
-  Examples: "Summarize all regional GDP statistics with a table",
-            "Compare population and GDP across all African regions",
-            "What are the key trends across all indicators?"
+complexity="complex"  → k = 25–40
+  "all", "every", "summarize all", broad analysis, tables needed.
+  Examples: "Tell me GDP of all countries",
+            "Summarize all regional statistics with a table",
+            "Compare all regions", "give me everything about X"
+  ANY query with "all", "every", "summarize", "overview" → complex, k=25+
 
 ── OTHER RULES ────────────────────────────────────────────────────────────────
 - named_vector="text_large", embed_model="large" → ONLY for legal/contract/compliance documents
@@ -145,7 +145,7 @@ async def route_query(
         if complexity == "simple":
             k = max(5, min(raw_k, 10))
         elif complexity == "complex":
-            k = max(20, min(raw_k, 40))
+            k = max(25, min(raw_k, 40))
         else:  # moderate
             k = max(10, min(raw_k, 20))
 

@@ -138,8 +138,8 @@ async def ask_question(
         k=plan.k,
         score_threshold=0.0,
         rerank=True,
-        rerank_top_n=min(plan.k, 8),
-        rerank_threshold=0.5,   # only chunks scoring ≥0.5 after rerank reach the LLM
+        rerank_top_n=min(plan.k, 15),
+        rerank_threshold=0.3,   # drop only clearly irrelevant chunks
         collection_names=collection_names,
     )
 

@@ -142,18 +142,21 @@ def _sync_hybrid_search(
 
 
 async def _rerank(query: str, hits: List[Dict[str, Any]], top_n: int) -> List[Dict[str, Any]]:
-    """Rerank hits using OpenRouter RERANK_MODEL (gpt-4o-mini by default)."""
+    """Rerank hits using OpenRouter LLM. Falls back to hybrid scores on any failure."""
     if not hits:
         return hits
 
     import json
     from openai import AsyncOpenAI
 
-    # Build numbered chunk list for the prompt
+    # Pre-assign hybrid scores as fallback so no chunk ever has rerank_score=0.0
+    for hit in hits:
+        hit["rerank_score"] = float(hit.get("score", 0.5))
+
     chunks_text = "\n\n".join(
-        f"[{i}] {h['content'][:400]}" for i, h in enumerate(hits)
+        f"[{i+1}] {h['content'][:300]}" for i, h in enumerate(hits)
     )
-    user_msg = f"Query: {query}\n\nChunks:\n{chunks_text}"
+    user_msg = f"Query: {query}\n\nChunks to score:\n{chunks_text}"
 
     try:
         client = AsyncOpenAI(
@@ -166,30 +169,42 @@ async def _rerank(query: str, hits: List[Dict[str, Any]], top_n: int) -> List[Di
                 {"role": "system", "content": _RERANK_SYSTEM},
                 {"role": "user",   "content": user_msg},
             ],
-            max_tokens=300,
+            max_tokens=600,
             temperature=0,
         )
-        raw = (response.choices[0].message.content or "[]").strip()
+        raw = (response.choices[0].message.content or "").strip()
+        logger.info("[RETRIEVER] Reranker raw response: %s", raw[:300])
+
+        # Strip markdown fences
         raw = raw.lstrip("```json").lstrip("```").rstrip("```").strip()
         scores_data = json.loads(raw)
 
-        # Apply scores back to hits
-        score_map = {item["index"]: float(item["score"]) for item in scores_data}
-        for i, hit in enumerate(hits):
-            hit["rerank_score"] = score_map.get(i, 0.0)
+        # Build score map — try both 1-based and 0-based indices
+        score_map_1 = {int(item["index"]): float(item["score"]) for item in scores_data}
+        score_map_0 = {int(item["index"]) - 1: float(item["score"]) for item in scores_data}
 
-        ranked = sorted(hits, key=lambda h: h.get("rerank_score", 0.0), reverse=True)
+        applied = 0
+        for i, hit in enumerate(hits):
+            # Prefer 1-based lookup, fall back to 0-based
+            if (i + 1) in score_map_1:
+                hit["rerank_score"] = score_map_1[i + 1]
+                applied += 1
+            elif i in score_map_0:
+                hit["rerank_score"] = score_map_0[i]
+                applied += 1
+            # else: keeps the hybrid score pre-assigned above
+
         logger.info(
-            "[RETRIEVER] Reranked via %s | chunks=%d top_n=%d",
-            settings.RERANK_MODEL, len(hits), top_n,
+            "[RETRIEVER] Rerank applied | chunks=%d scored=%d/%d scores=%s",
+            len(hits), applied, len(hits),
+            [(i+1, round(h["rerank_score"], 2)) for i, h in enumerate(hits)],
         )
-        return ranked[:top_n]
 
     except Exception as exc:
-        logger.warning("[RETRIEVER] Rerank failed, returning original order | err=%s", exc)
-        for hit in hits:
-            hit.setdefault("rerank_score", hit.get("score", 0.0))
-        return hits[:top_n]
+        logger.warning("[RETRIEVER] Rerank LLM failed — using hybrid scores | err=%s", exc)
+
+    ranked = sorted(hits, key=lambda h: h.get("rerank_score", 0.0), reverse=True)
+    return ranked[:top_n]
 
 
 async def hybrid_search(

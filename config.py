@@ -45,6 +45,8 @@ class Settings(BaseSettings):
 
     # ── Chunking ──────────────────────────────────────────────────────────────
     SEMANTIC_BREAKPOINT_PERCENTILE: int = 95
+    HTML_CHUNK_SIZE: int = 1000
+    HTML_CHUNK_OVERLAP: int = 100
 
     # ── Retrieval Defaults ────────────────────────────────────────────────────
     SCORE_THRESHOLD: float = 0.70
