@@ -154,7 +154,7 @@ async def _rerank(query: str, hits: List[Dict[str, Any]], top_n: int) -> List[Di
         hit["rerank_score"] = float(hit.get("score", 0.5))
 
     chunks_text = "\n\n".join(
-        f"[{i+1}] {h['content'][:300]}" for i, h in enumerate(hits)
+        f"[{i+1}] {h['content'][:800]}" for i, h in enumerate(hits)
     )
     user_msg = f"Query: {query}\n\nChunks to score:\n{chunks_text}"
 

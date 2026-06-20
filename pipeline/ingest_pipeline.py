@@ -360,9 +360,13 @@ async def run_ingestion_pipeline(
             obj.properties["filename"] = filename
             obj.properties["user_id"]  = user_id
 
-        logger.info("[PIPELINE] Step: upserting to Weaviate | collection=%s ...", collection_name)
+        logger.info("[PIPELINE] Step: upserting to Weaviate | requested=%s (routing by chunk_type) ...", collection_name)
         # ── Step 6: Batch upsert to Weaviate ──────────────────────────────────
-        result = await batch_upsert(weaviate_objects, user_id, collection_name_override=collection_name)
+        # Route each chunk to its natural collection by chunk_type
+        # (text→RAGDocuments, table→RAGTables, image_caption→RAGImages).
+        # Do NOT force everything into the user-selected collection, or table /
+        # image chunks would be misrouted and their collections left empty.
+        result = await batch_upsert(weaviate_objects, user_id, collection_name_override=None)
         logger.info("[PIPELINE] Step: upsert done | upserted=%d errors=%d", result["upserted"], result["errors"])
 
         chunk_count = result["upserted"]

@@ -135,6 +135,9 @@
   .ref { cursor: pointer; transition: box-shadow .12s; }
   .ref:hover { box-shadow: 0 2px 10px rgba(0,0,0,.08); border-color: var(--accent); }
   .rr-open { margin-left: auto; color: var(--accent-dark); font-size: 12px; font-weight: 600; white-space: nowrap; }
+  .del-btn { margin-left: auto; background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; border-radius: 7px; padding: 5px 11px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+  .del-btn:hover { background: #b91c1c; color: #fff; border-color: #b91c1c; }
+  .meta-tbl-wrap { margin-top: 8px; }
 
   /* Compact reference list */
   .ref-list { display: flex; flex-direction: column; gap: 6px; }
@@ -190,17 +193,20 @@
         <div class="tab active" data-tab="ask">Ask</div>
         <div class="tab" data-tab="retrieve">Retrieve</div>
         <div class="tab" data-tab="ingest">Ingest</div>
+        <div class="tab" data-tab="manage">Manage</div>
       </div>
 
       <label class="field">User ID</label>
       <input id="userId" type="text" value="alice" />
 
-      <label class="field">Collections</label>
-      <div class="chips" id="collections">
-        <label class="chk"><input type="checkbox" value="documents" checked />documents</label>
-        <label class="chk"><input type="checkbox" value="tables" />tables</label>
-        <label class="chk"><input type="checkbox" value="images" />images</label>
-        <label class="chk"><input type="checkbox" value="html" />html</label>
+      <div id="collectionsPane">
+        <label class="field">Collections</label>
+        <div class="chips" id="collections">
+          <label class="chk"><input type="checkbox" value="documents" checked />documents</label>
+          <label class="chk"><input type="checkbox" value="tables" />tables</label>
+          <label class="chk"><input type="checkbox" value="images" />images</label>
+          <label class="chk"><input type="checkbox" value="html" />html</label>
+        </div>
       </div>
 
       <!-- ASK / RETRIEVE shared query -->
@@ -235,6 +241,20 @@
         <p style="font-size:12px;color:var(--muted)">Ingest uses the first selected collection above as target.</p>
       </div>
 
+      <!-- MANAGE -->
+      <div id="managePane" class="hidden">
+        <p style="font-size:12px;color:var(--muted)">List and delete users and documents. Deletes remove vectors and files too.</p>
+        <div class="row">
+          <div>
+            <button class="run" type="button" style="margin-top:8px" onclick="loadUsers()">List users</button>
+          </div>
+          <div>
+            <button class="run" type="button" style="margin-top:8px" onclick="loadDocs()">List documents</button>
+          </div>
+        </div>
+        <p style="font-size:12px;color:var(--muted);margin-top:10px">Documents are listed for the <b>User ID</b> above.</p>
+      </div>
+
       <button class="run" id="runBtn">Run</button>
     </div>
   </div>
@@ -259,8 +279,13 @@ document.querySelectorAll(".tab").forEach(t => {
     t.classList.add("active");
     currentTab = t.dataset.tab;
     const isIngest = currentTab === "ingest";
+    const isManage = currentTab === "manage";
+    const isQuery = !isIngest && !isManage;
     $("ingestPane").classList.toggle("hidden", !isIngest);
-    $("queryPane").classList.toggle("hidden", isIngest);
+    $("managePane").classList.toggle("hidden", !isManage);
+    $("queryPane").classList.toggle("hidden", !isQuery);
+    $("collectionsPane").classList.toggle("hidden", isManage);  // not relevant to Manage
+    $("runBtn").classList.toggle("hidden", isManage);   // Manage uses its own buttons
     $("qLabel").textContent = currentTab === "ask" ? "Question" : "Query";
     $("runBtn").textContent = isIngest ? "Upload & Ingest" : (currentTab === "ask" ? "Ask" : "Retrieve");
   });
@@ -457,6 +482,85 @@ function renderChunks(data) {
 function renderRaw(title, data) {
   $("output").innerHTML = `<div class="section-title">${title}</div>
     <pre class="raw">${JSON.stringify(data, null, 2)}</pre>`;
+}
+
+// ===== Manage: users & documents =====
+async function loadUsers() {
+  setStatus("Loading users…", "load");
+  try {
+    const res = await fetch(base() + "/api/v1/users");
+    const users = await res.json();
+    if (!res.ok) throw new Error(users.detail || res.status);
+    setStatus(`✓ ${users.length} user(s)`, "ok");
+    const rows = users.map(u => `
+      <div class="ref" style="cursor:default">
+        <div class="ref-head">
+          <span class="ref-name">${esc(u.email)}</span>
+          <span class="ref-meta">· ${u.document_count} docs · ${esc((u.created_at||"").slice(0,10))}</span>
+          <button class="del-btn" onclick="deleteUser('${esc(u.user_id)}','${esc(u.email)}')">🗑 Delete user</button>
+        </div>
+        <div class="meta-tbl-wrap"><table class="meta-tbl"><tbody>
+          <tr><td>user_id</td><td>${esc(u.user_id)}</td></tr>
+          <tr><td>email</td><td>${esc(u.email)}</td></tr>
+          <tr><td>documents</td><td>${u.document_count}</td></tr>
+        </tbody></table></div>
+      </div>`).join("");
+    $("output").innerHTML = `<div class="section-title">Users (${users.length})</div>${rows || '<div class="empty">No users.</div>'}`;
+  } catch (e) { setStatus("✗ " + e.message, "err"); }
+}
+
+async function loadDocs() {
+  const uid = $("userId").value.trim();
+  if (!uid) { setStatus("✗ Enter a User ID above first.", "err"); return; }
+  setStatus("Loading documents…", "load");
+  try {
+    const res = await fetch(base() + "/api/v1/documents?user_id=" + encodeURIComponent(uid));
+    const docs = await res.json();
+    if (!res.ok) throw new Error(docs.detail || res.status);
+    setStatus(`✓ ${docs.length} document(s) for ${uid}`, "ok");
+    const rows = docs.map(d => `
+      <div class="ref" style="cursor:default">
+        <div class="ref-head">
+          <span class="ref-name">${esc(d.filename)}</span>
+          <span class="ref-meta">· ${esc(d.doc_type)} · ${d.chunk_count} chunks · ${esc(d.status)}</span>
+          <button class="del-btn" onclick="deleteDoc('${esc(d.doc_id)}','${esc(uid)}','${esc(d.filename)}')">🗑 Delete</button>
+        </div>
+        <div class="meta-tbl-wrap"><table class="meta-tbl"><tbody>
+          <tr><td>doc_id</td><td>${esc(d.doc_id)}</td></tr>
+          <tr><td>status</td><td>${esc(d.status)}</td></tr>
+          <tr><td>chunks</td><td>${d.chunk_count}</td></tr>
+          <tr><td>created</td><td>${esc(d.created_at)}</td></tr>
+          <tr><td>file_path</td><td>${esc(d.file_path||"")}</td></tr>
+          ${d.error_msg ? `<tr><td>error</td><td>${esc(d.error_msg)}</td></tr>` : ""}
+        </tbody></table></div>
+      </div>`).join("");
+    $("output").innerHTML = `<div class="section-title">Documents for ${esc(uid)} (${docs.length})</div>${rows || '<div class="empty">No documents.</div>'}`;
+  } catch (e) { setStatus("✗ " + e.message, "err"); }
+}
+
+async function deleteUser(userId, email) {
+  if (!confirm(`Delete user "${email}" and ALL their documents, vectors and files?\nThis cannot be undone.`)) return;
+  setStatus("Deleting user…", "load");
+  try {
+    const res = await fetch(base() + "/api/v1/users/" + encodeURIComponent(userId), { method: "DELETE" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || res.status);
+    setStatus(`✓ Deleted user ${email}`, "ok");
+    loadUsers();
+  } catch (e) { setStatus("✗ " + e.message, "err"); }
+}
+
+async function deleteDoc(docId, userId, filename) {
+  if (!confirm(`Delete document "${filename}" and its vectors/files?\nThis cannot be undone.`)) return;
+  setStatus("Deleting document…", "load");
+  try {
+    const res = await fetch(base() + "/api/v1/documents/" + encodeURIComponent(docId) +
+                            "?user_id=" + encodeURIComponent(userId), { method: "DELETE" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || res.status);
+    setStatus(`✓ Deleted ${filename}`, "ok");
+    loadDocs();
+  } catch (e) { setStatus("✗ " + e.message, "err"); }
 }
 
 // ---- Run ----

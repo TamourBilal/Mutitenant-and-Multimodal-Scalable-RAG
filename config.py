@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     HTML_CHUNK_SIZE: int = 1000
     HTML_CHUNK_OVERLAP: int = 100
 
+    # ── PDF parsing ───────────────────────────────────────────────────────────
+    PDF_MAX_PAGES: int = 20   # hard cap on pages processed per PDF (0 = all pages)
+
     # ── Retrieval Defaults ────────────────────────────────────────────────────
     SCORE_THRESHOLD: float = 0.70
     DEFAULT_K: int = 10

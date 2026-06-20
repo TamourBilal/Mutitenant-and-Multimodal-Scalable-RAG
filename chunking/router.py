@@ -83,7 +83,7 @@ def chunk_tables(
     original_file_path: str,
 ) -> List[Chunk]:
     """Chunk table markdown — always uses text_small (exact values, BM25 benefits)."""
-    from chunking.semantic_chunker import split_semantic
+    from chunking.semantic_chunker import split_recursive
 
     legal = _is_legal(doc_type, filename)
     model: EmbedModel = "large" if legal else "small"
@@ -97,7 +97,7 @@ def chunk_tables(
         content = table.get("content", "").strip()
         if not content:
             continue
-        for piece in split_semantic(content, model=model):
+        for piece in split_recursive(content):
             chunks.append(
                 Chunk(
                     content=piece,

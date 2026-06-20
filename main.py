@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from api.routes import ask, documents, ingest, query, search
+from api.routes import ask, documents, ingest, query, search, users
 from config import settings
 from db.session import init_db
 from weaviate_store.client import close_weaviate_client, get_weaviate_client
@@ -78,6 +78,7 @@ app.include_router(documents.router, prefix="/api/v1/documents", tags=["document
 app.include_router(search.router,    prefix="/api/v1/search",    tags=["retrieval"])
 app.include_router(ask.router,       prefix="/api/v1/ask",       tags=["generation"])
 app.include_router(query.router,     prefix="/api/v1/query",     tags=["generation"])
+app.include_router(users.router,     prefix="/api/v1/users",     tags=["users"])
 
 # ── Static file serving (source documents for the frontend side-panel viewer) ──
 # Exposes the storage dir so the UI can open the exact file/page a reference cites.
