@@ -147,6 +147,7 @@ class Reference:
     file_path: str
     date: str
     score: float
+    rerank_score: float
     chunk_type: str
     doc_id: str
     content_preview: str
@@ -174,7 +175,8 @@ def _hits_to_references(hits: List[Dict[str, Any]]) -> List[Reference]:
             page_no=int(hit.get("page_no") or 0),
             file_path=hit.get("file_path", ""),
             date=str(hit.get("date") or ""),
-            score=float(hit.get("rerank_score") or hit.get("score") or 0.0),
+            score=float(hit.get("score") or 0.0),
+            rerank_score=float(hit.get("rerank_score") or hit.get("score") or 0.0),
             chunk_type=hit.get("chunk_type", "text"),
             doc_id=hit.get("doc_id", ""),
             content_preview=hit.get("content", "")[:200],

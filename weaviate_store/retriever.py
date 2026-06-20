@@ -14,8 +14,8 @@ logger = logging.getLogger(__name__)
 _RERANK_SYSTEM = """You are a relevance reranker for a RAG system.
 Given a query and a list of retrieved chunks, score each chunk for relevance.
 
-Output ONLY a JSON array of objects in this exact format (no markdown):
-[{"index": 0, "score": 0.95}, {"index": 1, "score": 0.42}, ...]
+Output ONLY a JSON array of objects in this exact format (no markdown, use the same [N] index shown in the chunks):
+[{"index": 1, "score": 0.95}, {"index": 2, "score": 0.42}, ...]
 
 Scoring rules:
 - 0.9–1.0: directly answers the query with specific facts
@@ -175,22 +175,22 @@ async def _rerank(query: str, hits: List[Dict[str, Any]], top_n: int) -> List[Di
         raw = (response.choices[0].message.content or "").strip()
         logger.info("[RETRIEVER] Reranker raw response: %s", raw[:300])
 
-        # Strip markdown fences
-        raw = raw.lstrip("```json").lstrip("```").rstrip("```").strip()
+        # Strip markdown fences properly
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[-1]  # drop the ```json line
+        if raw.endswith("```"):
+            raw = raw.rsplit("```", 1)[0]
+        raw = raw.strip()
         scores_data = json.loads(raw)
 
-        # Build score map — try both 1-based and 0-based indices
-        score_map_1 = {int(item["index"]): float(item["score"]) for item in scores_data}
-        score_map_0 = {int(item["index"]) - 1: float(item["score"]) for item in scores_data}
+        # Chunks are labeled [1],[2],... in the prompt so LLM returns 1-based indices
+        score_map = {int(item["index"]): float(item["score"]) for item in scores_data}
 
         applied = 0
         for i, hit in enumerate(hits):
-            # Prefer 1-based lookup, fall back to 0-based
-            if (i + 1) in score_map_1:
-                hit["rerank_score"] = score_map_1[i + 1]
-                applied += 1
-            elif i in score_map_0:
-                hit["rerank_score"] = score_map_0[i]
+            idx = i + 1  # convert 0-based position to 1-based label sent to LLM
+            if idx in score_map:
+                hit["rerank_score"] = score_map[idx]
                 applied += 1
             # else: keeps the hybrid score pre-assigned above
 
@@ -201,7 +201,7 @@ async def _rerank(query: str, hits: List[Dict[str, Any]], top_n: int) -> List[Di
         )
 
     except Exception as exc:
-        logger.warning("[RETRIEVER] Rerank LLM failed — using hybrid scores | err=%s", exc)
+        logger.exception("[RETRIEVER] Rerank LLM failed — using hybrid scores | err=%s", exc)
 
     ranked = sorted(hits, key=lambda h: h.get("rerank_score", 0.0), reverse=True)
     return ranked[:top_n]

@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>RAG Console</title>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<style>
+  :root {
+    --bg: #f7f7f8;
+    --panel: #ffffff;
+    --border: #e3e3e6;
+    --text: #1f2329;
+    --muted: #6b7280;
+    --accent: #10a37f;
+    --accent-dark: #0e8c6c;
+    --chip: #eef2f7;
+    --code-bg: #f4f4f5;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 15px;
+  }
+  header {
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    padding: 14px 22px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  header h1 { font-size: 17px; margin: 0; font-weight: 650; }
+  .config { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 260px; }
+  .config label { font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .config input {
+    flex: 1;
+    padding: 7px 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 13px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .layout { display: flex; gap: 20px; padding: 20px; max-width: 1400px; margin: 0 auto; align-items: flex-start; }
+  .left { width: 360px; flex-shrink: 0; }
+  .right { flex: 1; min-width: 0; }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  .tabs { display: flex; gap: 6px; margin-bottom: 14px; }
+  .tab {
+    flex: 1;
+    padding: 9px;
+    text-align: center;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--chip);
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--muted);
+    user-select: none;
+  }
+  .tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  label.field { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 5px; font-weight: 600; }
+  input[type=text], input[type=number], select, textarea {
+    width: 100%;
+    padding: 9px 11px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 14px;
+    font-family: inherit;
+  }
+  textarea { resize: vertical; min-height: 80px; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chk { display: flex; align-items: center; gap: 5px; font-size: 13px; background: var(--chip); padding: 6px 10px; border-radius: 20px; cursor: pointer; }
+  .chk input { width: auto; }
+  .row { display: flex; gap: 10px; }
+  .row > div { flex: 1; }
+  button.run {
+    width: 100%;
+    margin-top: 16px;
+    padding: 11px;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 650;
+    cursor: pointer;
+  }
+  button.run:hover { background: var(--accent-dark); }
+  button.run:disabled { opacity: .55; cursor: not-allowed; }
+  .hidden { display: none; }
+
+  /* Answer area — ChatGPT style */
+  .answer-wrap { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 4px 26px 20px; }
+  .answer { line-height: 1.62; }
+  .answer h1 { font-size: 22px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  .answer h2 { font-size: 18px; margin-top: 26px; }
+  .answer h3 { font-size: 15px; margin-top: 20px; }
+  .answer table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 13.5px; }
+  .answer th, .answer td { border: 1px solid var(--border); padding: 7px 10px; text-align: left; }
+  .answer th { background: var(--chip); }
+  .answer blockquote { border-left: 3px solid var(--accent); margin: 12px 0; padding: 4px 14px; color: var(--muted); background: #fafafa; }
+  .answer code { background: var(--code-bg); padding: 2px 5px; border-radius: 4px; font-size: 13px; }
+  .answer pre { background: var(--code-bg); padding: 12px; border-radius: 8px; overflow-x: auto; }
+  .cite { color: var(--accent); font-weight: 600; cursor: pointer; }
+
+  .meta-bar { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0; }
+  .pill { background: var(--chip); border-radius: 16px; padding: 4px 12px; font-size: 12px; color: var(--muted); }
+  .pill b { color: var(--text); }
+
+  .ref { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; background: var(--panel); }
+  .ref-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+  .ref-idx { background: var(--accent); color: #fff; width: 22px; height: 22px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; flex-shrink: 0; }
+  .ref-name { font-weight: 600; font-size: 13.5px; }
+  .ref-meta { font-size: 12px; color: var(--muted); }
+  .score-bar { display: flex; gap: 14px; margin: 6px 0; font-size: 12px; }
+  .score-bar .s { display: flex; flex-direction: column; gap: 3px; flex: 1; }
+  .bar { height: 6px; border-radius: 3px; background: var(--chip); overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: var(--accent); }
+  .bar.alt > i { background: #f59e0b; }
+  .ref { cursor: pointer; transition: box-shadow .12s; }
+  .ref:hover { box-shadow: 0 2px 10px rgba(0,0,0,.08); border-color: var(--accent); }
+  .rr-open { margin-left: auto; color: var(--accent-dark); font-size: 12px; font-weight: 600; white-space: nowrap; }
+
+  /* Compact reference list */
+  .ref-list { display: flex; flex-direction: column; gap: 6px; }
+  .ref-row { display: flex; align-items: center; gap: 8px; background: var(--panel); border: 1px solid var(--border); border-radius: 9px; padding: 8px 12px; cursor: pointer; font-size: 13px; transition: .12s; }
+  .ref-row:hover { border-color: var(--accent); background: #f6fdfb; }
+  .rr-scores { color: var(--muted); font-size: 12px; margin-left: 8px; white-space: nowrap; }
+
+  /* Full chunk card: text scroller + raw metadata side by side */
+  .chunk-grid { display: grid; grid-template-columns: 1fr 300px; gap: 12px; margin-top: 8px; }
+  .chunk-text { font-size: 12.5px; color: var(--text); white-space: pre-wrap; max-height: 200px; overflow-y: auto; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px; line-height: 1.5; }
+  .meta-tbl { width: 100%; border-collapse: collapse; font-size: 11.5px; display: block; max-height: 200px; overflow-y: auto; }
+  .meta-tbl td { border: 1px solid var(--border); padding: 4px 7px; vertical-align: top; word-break: break-word; }
+  .meta-tbl td:first-child { color: var(--muted); width: 96px; font-weight: 600; white-space: nowrap; }
+  @media (max-width: 720px) { .chunk-grid { grid-template-columns: 1fr; } }
+
+  /* Side viewer */
+  #viewerBackdrop { position: fixed; inset: 0; background: rgba(0,0,0,.35); opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 40; }
+  #viewer.open ~ #viewerBackdrop, #viewerBackdrop.show { }
+  #viewer { position: fixed; top: 0; right: 0; height: 100vh; width: 0; background: var(--panel); border-left: 1px solid var(--border); box-shadow: -4px 0 24px rgba(0,0,0,.12); z-index: 50; display: flex; flex-direction: column; transition: width .22s ease; overflow: hidden; }
+  #viewer.open { width: min(720px, 60vw); }
+  body:has(#viewer.open) #viewerBackdrop { opacity: 1; pointer-events: auto; }
+  .viewer-head { display: flex; align-items: flex-start; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--border); }
+  .viewer-title { font-weight: 700; font-size: 15px; word-break: break-all; }
+  .viewer-sub { font-size: 12px; color: var(--muted); margin-top: 3px; }
+  .viewer-close { margin-left: auto; background: var(--accent); color: #fff; border: none; border-radius: 8px; padding: 8px 14px; cursor: pointer; font-size: 13px; font-weight: 700; white-space: nowrap; }
+  .viewer-close:hover { background: var(--accent-dark); }
+  .viewer-body { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  .viewer-body iframe { flex: 1; width: 100%; border: 0; }
+  .viewer-note { font-size: 12px; color: var(--muted); padding: 10px 16px; border-top: 1px solid var(--border); background: var(--bg); }
+  .status { font-size: 13px; padding: 10px 14px; border-radius: 8px; margin-bottom: 14px; }
+  .status.err { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
+  .status.ok { background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; }
+  .status.load { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
+  .empty { color: var(--muted); text-align: center; padding: 60px 20px; }
+  .section-title { font-size: 13px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin: 22px 0 10px; }
+  pre.raw { background: var(--code-bg); padding: 14px; border-radius: 10px; font-size: 12px; overflow-x: auto; max-height: 400px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🔍 RAG Console</h1>
+  <div class="config">
+    <label>API Base</label>
+    <input id="baseUrl" type="text" value="http://localhost:8000" />
+  </div>
+</header>
+
+<div class="layout">
+  <!-- LEFT: controls -->
+  <div class="left">
+    <div class="card">
+      <div class="tabs">
+        <div class="tab active" data-tab="ask">Ask</div>
+        <div class="tab" data-tab="retrieve">Retrieve</div>
+        <div class="tab" data-tab="ingest">Ingest</div>
+      </div>
+
+      <label class="field">User ID</label>
+      <input id="userId" type="text" value="alice" />
+
+      <label class="field">Collections</label>
+      <div class="chips" id="collections">
+        <label class="chk"><input type="checkbox" value="documents" checked />documents</label>
+        <label class="chk"><input type="checkbox" value="tables" />tables</label>
+        <label class="chk"><input type="checkbox" value="images" />images</label>
+        <label class="chk"><input type="checkbox" value="html" />html</label>
+      </div>
+
+      <!-- ASK / RETRIEVE shared query -->
+      <div id="queryPane">
+        <label class="field" id="qLabel">Question</label>
+        <textarea id="query" placeholder="Ask anything about your documents…">Give me insights on FIFA World Cup and GDP by country</textarea>
+        <div class="row">
+          <div>
+            <label class="field">k (optional)</label>
+            <input id="k" type="number" min="1" max="50" placeholder="auto" />
+          </div>
+          <div>
+            <label class="field">alpha (optional)</label>
+            <input id="alpha" type="number" min="0" max="1" step="0.05" placeholder="auto" />
+          </div>
+        </div>
+      </div>
+
+      <!-- INGEST -->
+      <div id="ingestPane" class="hidden">
+        <label class="field">File</label>
+        <input id="file" type="file" />
+        <label class="field">doc_type (optional)</label>
+        <select id="docType">
+          <option value="">auto-detect</option>
+          <option value="legal">legal</option>
+          <option value="pdf">pdf</option>
+          <option value="html">html</option>
+          <option value="image">image</option>
+          <option value="other">other</option>
+        </select>
+        <p style="font-size:12px;color:var(--muted)">Ingest uses the first selected collection above as target.</p>
+      </div>
+
+      <button class="run" id="runBtn">Run</button>
+    </div>
+  </div>
+
+  <!-- RIGHT: results -->
+  <div class="right">
+    <div id="status"></div>
+    <div id="output">
+      <div class="empty">Results will appear here.</div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let currentTab = "ask";
+
+// Tab switching
+document.querySelectorAll(".tab").forEach(t => {
+  t.addEventListener("click", () => {
+    document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
+    t.classList.add("active");
+    currentTab = t.dataset.tab;
+    const isIngest = currentTab === "ingest";
+    $("ingestPane").classList.toggle("hidden", !isIngest);
+    $("queryPane").classList.toggle("hidden", isIngest);
+    $("qLabel").textContent = currentTab === "ask" ? "Question" : "Query";
+    $("runBtn").textContent = isIngest ? "Upload & Ingest" : (currentTab === "ask" ? "Ask" : "Retrieve");
+  });
+});
+
+const base = () => $("baseUrl").value.replace(/\/$/, "");
+const getCollections = () =>
+  [...document.querySelectorAll("#collections input:checked")].map(c => c.value);
+
+function setStatus(msg, kind) {
+  $("status").innerHTML = msg ? `<div class="status ${kind}">${msg}</div>` : "";
+}
+
+function num(id) {
+  const v = $(id).value.trim();
+  return v === "" ? null : Number(v);
+}
+
+// ---- Markdown answer rendering (ChatGPT style) ----
+function renderAnswer(data) {
+  marked.setOptions({ breaks: true, gfm: true });
+  let html = marked.parse(data.answer || "");
+  // make [n] citations clickable → open that reference on the right
+  html = html.replace(/\[(\d+)\]/g, '<span class="cite" data-cidx="$1">[$1]</span>');
+
+  const m = data;
+  REFS = m.references || [];
+  // map citation_index → array position for inline citation clicks
+  REF_BY_CIDX = {};
+  REFS.forEach((r, i) => { REF_BY_CIDX[r.citation_index] = i; });
+
+  const pills = [];
+  const push = (k, v) => { if (v !== undefined && v !== null) pills.push(`<span class="pill">${k} <b>${v}</b></span>`); };
+  push("chunks used", m.chunks_used);
+  push("filtered", m.chunks_filtered);
+  push("k", m.k_used);
+  push("alpha", m.alpha_used);
+  push("vector", m.named_vector_used);
+  push("tokens", m.tokens_used);
+  push("complexity", m.query_complexity);
+  if (m.guardrail_verdict) push("guardrail", m.guardrail_verdict);
+  if (m.low_confidence) pills.push(`<span class="pill" style="color:#b45309">⚠ low confidence</span>`);
+
+  // Compact reference list (clickable) + full original chunk cards below
+  const refList = REFS.map((r, i) => refRow(r, i)).join("");
+  const chunkCards = REFS.map((r, i) => chunkCard({ ...r, content: r.content_preview }, i)).join("");
+
+  $("output").innerHTML = `
+    <div class="answer-wrap"><div class="answer">${html}</div></div>
+    <div class="meta-bar">${pills.join("")}</div>
+    ${refList ? `<div class="section-title">References (${REFS.length}) — click to open source</div>
+                 <div class="ref-list">${refList}</div>` : ""}
+    ${chunkCards ? `<div class="section-title">Original chunks</div>${chunkCards}` : ""}
+  `;
+  wireRefs();
+
+  // inline citation click → open that reference's source on the right
+  document.querySelectorAll(".cite").forEach(c => {
+    c.addEventListener("click", () => {
+      const pos = REF_BY_CIDX[c.dataset.cidx];
+      if (pos !== undefined) openViewer(REFS[pos]);
+    });
+  });
+}
+
+// ===== Shared state & helpers =====
+let REFS = [];            // current reference/chunk objects, indexed by array position
+let REF_BY_CIDX = {};     // citation_index → array position
+const esc = (s) => (s || "").toString().replace(/</g,"&lt;").replace(/>/g,"&gt;");
+
+// Compact clickable reference row (Sources-style)
+function refRow(r, i) {
+  const idx = r.citation_index ?? (i + 1);
+  return `
+    <div class="ref-row" data-ridx="${i}">
+      <span class="ref-idx">${idx}</span>
+      <span class="ref-name">${esc(r.filename)}</span>
+      <span class="ref-meta">· ${esc(r.doc_type)} · page ${r.page_no}</span>
+      <span class="rr-scores">hybrid ${(r.score??0).toFixed(2)} · rerank ${(r.rerank_score??0).toFixed(2)}</span>
+      <span class="rr-open">open →</span>
+    </div>`;
+}
+
+// Full chunk card: raw metadata + scrollable full text, no button
+function chunkCard(r, i) {
+  const sc = r.score ?? 0, rk = r.rerank_score ?? 0;
+  const idx = r.citation_index ?? r.rank ?? (i + 1);
+  const text = r.content ?? r.content_preview ?? r.text ?? "";
+  const metaRows = [
+    ["filename", r.filename], ["source", r.source], ["doc_type", r.doc_type],
+    ["page_no", r.page_no], ["chunk_type", r.chunk_type], ["collection", r.collection],
+    ["doc_id", r.doc_id], ["date", r.date],
+    ["hybrid score", sc.toFixed ? sc.toFixed(4) : sc],
+    ["rerank score", rk.toFixed ? rk.toFixed(4) : rk],
+    ["file_path", r.file_path],
+  ].filter(([,v]) => v !== undefined && v !== null && v !== "")
+   .map(([k,v]) => `<tr><td>${k}</td><td>${esc(String(v))}</td></tr>`).join("");
+
+  return `
+    <div class="ref" id="ref-${idx}" data-ridx="${i}">
+      <div class="ref-head">
+        <span class="ref-idx">${idx}</span>
+        <span class="ref-name">${esc(r.filename)}</span>
+        <span class="ref-meta">· ${esc(r.doc_type)} · page ${r.page_no} · ${esc(r.chunk_type || "")}</span>
+        <span class="rr-open">open source →</span>
+      </div>
+      <div class="chunk-grid">
+        <div class="chunk-text" title="scroll to read full text">${esc(text)}</div>
+        <table class="meta-tbl"><tbody>${metaRows}</tbody></table>
+      </div>
+    </div>`;
+}
+
+function wireRefs() {
+  // Any element with data-ridx → open that source in the right panel
+  document.querySelectorAll("[data-ridx]").forEach(el => {
+    el.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openViewer(REFS[+el.dataset.ridx]);
+    });
+  });
+}
+
+// ---- Side-panel source viewer ----
+function fileUrl(filePath) {
+  if (!filePath) return null;
+  // file_path like: storage\alice\<id>\originals\file.pdf  ->  /files/alice/<id>/originals/file.pdf
+  let p = filePath.replace(/\\/g, "/").replace(/^\.?\/?storage\/?/i, "");
+  return base() + "/files/" + p.split("/").map(encodeURIComponent).join("/");
+}
+
+async function openViewer(r) {
+  if (!r) return;
+  const drawer = $("viewer");
+  const url = fileUrl(r.file_path);
+  const isPdf  = /\.pdf$/i.test(r.file_path || "");
+  const isHtml = /\.html?$/i.test(r.file_path || "");
+  const page = r.page_no || 0;
+
+  $("viewerTitle").textContent = r.filename || "Source";
+  $("viewerSub").textContent =
+    `${r.doc_type || ""} · page ${r.page_no} · ${r.chunk_type || ""} · hybrid ${(r.score??0).toFixed(2)} · rerank ${(r.rerank_score??0).toFixed(2)}`;
+  drawer.classList.add("open");
+
+  if (!url) {
+    $("viewerBody").innerHTML = `<div class="viewer-note">No <code>file_path</code> in metadata for this reference.</div>`;
+    return;
+  }
+
+  if (isHtml) {
+    // Saved webpages reference a companion *_files/ folder that wasn't uploaded.
+    // Fetch the HTML, strip scripts/links/relative assets, render sandboxed → no 404s.
+    $("viewerBody").innerHTML = `<div class="viewer-note">Loading HTML…</div>`;
+    try {
+      const txt = await (await fetch(url)).text();
+      const clean = txt
+        .replace(/<script[\s\S]*?<\/script>/gi, "")
+        .replace(/<link\b[^>]*>/gi, "")
+        .replace(/\s(?:src|href)\s*=\s*(["'])(?!https?:|data:|#)[^"']*\1/gi, "");
+      const safe = clean.replace(/"/g, "&quot;");
+      $("viewerBody").innerHTML =
+        `<iframe sandbox srcdoc="${safe}" title="source"></iframe>
+         <div class="viewer-note">Showing <code>${esc(r.file_path)}</code> (scripts/assets stripped).</div>`;
+    } catch (e) {
+      $("viewerBody").innerHTML = `<div class="viewer-note">Could not load <code>${esc(r.file_path)}</code> — ${esc(e.message)}</div>`;
+    }
+    return;
+  }
+
+  const src = isPdf && page ? `${url}#page=${page}` : url;
+  $("viewerBody").innerHTML =
+    `<iframe src="${src}" title="source"></iframe>
+     <div class="viewer-note">Showing <code>${esc(r.file_path)}</code>${isPdf && page ? ` at page ${page}` : ""}.
+     If blank, the API isn't serving <code>/files</code> — restart it after the latest change.</div>`;
+}
+function closeViewer(){ $("viewer").classList.remove("open"); $("viewerBody").innerHTML=""; }
+
+// ---- Retrieve (chunks) rendering ----
+function renderChunks(data) {
+  const chunks = data.chunks || [];
+  const plan = data.query_plan || {};
+  let pills = `<span class="pill">returned <b>${data.total_returned}</b></span>
+    <span class="pill">k <b>${plan.k}</b></span>
+    <span class="pill">alpha <b>${plan.alpha}</b></span>
+    <span class="pill">vector <b>${plan.named_vector}</b></span>
+    <span class="pill">complexity <b>${plan.complexity}</b></span>`;
+  REFS = chunks;
+  const rows = chunks.map((c, i) => chunkCard(c, i)).join("");
+  $("output").innerHTML = `<div class="meta-bar">${pills}</div>
+    <div class="section-title">Chunks (${chunks.length})</div>${rows || '<div class="empty">No chunks.</div>'}`;
+  wireRefs();
+}
+
+function renderRaw(title, data) {
+  $("output").innerHTML = `<div class="section-title">${title}</div>
+    <pre class="raw">${JSON.stringify(data, null, 2)}</pre>`;
+}
+
+// ---- Run ----
+async function run() {
+  const btn = $("runBtn");
+  btn.disabled = true;
+  setStatus("Running…", "load");
+  $("output").innerHTML = `<div class="empty">⏳ Working…</div>`;
+  try {
+    if (currentTab === "ingest") return await runIngest();
+    const cols = getCollections();
+    if (!cols.length) throw new Error("Select at least one collection.");
+    const q = $("query").value.trim();
+    if (!q) throw new Error("Enter a query.");
+
+    if (currentTab === "ask") {
+      const body = { question: q, user_id: $("userId").value, collections: cols };
+      if (num("k") !== null) body.k = num("k");
+      if (num("alpha") !== null) body.alpha = num("alpha");
+      const data = await post("/api/v1/ask", body);
+      setStatus("✓ Answer generated", "ok");
+      renderAnswer(data);
+    } else {
+      const body = { query: q, user_id: $("userId").value, collections: cols };
+      if (num("k") !== null) body.k = num("k");
+      if (num("alpha") !== null) body.alpha = num("alpha");
+      const data = await post("/api/v1/search", body);
+      setStatus(`✓ Retrieved ${data.total_returned} chunks`, "ok");
+      renderChunks(data);
+    }
+  } catch (e) {
+    setStatus("✗ " + e.message, "err");
+    $("output").innerHTML = `<div class="empty">Request failed.</div>`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function runIngest() {
+  const f = $("file").files[0];
+  if (!f) throw new Error("Choose a file to ingest.");
+  const cols = getCollections();
+  if (!cols.length) throw new Error("Select a target collection.");
+  const fd = new FormData();
+  fd.append("file", f);
+  fd.append("user_id", $("userId").value);
+  fd.append("collection", cols[0]);
+  if ($("docType").value) fd.append("doc_type", $("docType").value);
+  const res = await fetch(base() + "/api/v1/ingest", { method: "POST", body: fd });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.detail || res.status);
+  setStatus(`✓ Ingestion accepted (status ${res.status})`, "ok");
+  renderRaw("Ingest Response", data);
+}
+
+async function post(path, body) {
+  const res = await fetch(base() + path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.detail || ("HTTP " + res.status));
+  return data;
+}
+
+$("runBtn").addEventListener("click", run);
+// Close button & backdrop use inline onclick (see markup below); Esc also closes.
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeViewer(); });
+</script>
+
+<!-- Source viewer side panel -->
+<div id="viewerBackdrop" onclick="closeViewer()"></div>
+<aside id="viewer">
+  <div class="viewer-head">
+    <div>
+      <div id="viewerTitle" class="viewer-title">Source</div>
+      <div id="viewerSub" class="viewer-sub"></div>
+    </div>
+    <button id="viewerClose" class="viewer-close" type="button" onclick="closeViewer()">✕ Close</button>
+  </div>
+  <div id="viewerBody" class="viewer-body"></div>
+</aside>
+</body>
+</html>

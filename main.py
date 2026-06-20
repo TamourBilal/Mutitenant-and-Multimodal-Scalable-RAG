@@ -13,9 +13,12 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
+import os
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from api.routes import ask, documents, ingest, query, search
 from config import settings
@@ -75,6 +78,11 @@ app.include_router(documents.router, prefix="/api/v1/documents", tags=["document
 app.include_router(search.router,    prefix="/api/v1/search",    tags=["retrieval"])
 app.include_router(ask.router,       prefix="/api/v1/ask",       tags=["generation"])
 app.include_router(query.router,     prefix="/api/v1/query",     tags=["generation"])
+
+# ── Static file serving (source documents for the frontend side-panel viewer) ──
+# Exposes the storage dir so the UI can open the exact file/page a reference cites.
+os.makedirs(settings.STORAGE_DIR, exist_ok=True)
+app.mount("/files", StaticFiles(directory=settings.STORAGE_DIR), name="files")
 
 
 # ── Utility endpoints ─────────────────────────────────────────────────────────
